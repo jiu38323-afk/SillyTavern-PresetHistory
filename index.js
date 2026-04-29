@@ -138,7 +138,21 @@ function extractPresetInfo(body) {
 
     if (!presetData) return null;
 
-    // 如果没找到名字，用一个通用名
+    // 如果没从请求体找到名字，从页面上的预设下拉菜单读
+    if (!presetName) {
+        var presetSelectors = ['#settings_perset_openai', '#settings_preset_openai', 'select[name="preset_openai"]'];
+        for (var s = 0; s < presetSelectors.length; s++) {
+            var $ps = jQuery(presetSelectors[s]);
+            if ($ps.length) {
+                var selectedText = $ps.find('option:selected').text().trim();
+                if (selectedText) {
+                    presetName = selectedText;
+                    break;
+                }
+            }
+        }
+    }
+
     if (!presetName) presetName = '当前预设';
 
     return { name: presetName, data: presetData };
