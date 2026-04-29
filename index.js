@@ -246,14 +246,13 @@ function installFetchInterceptor() {
     if (fetchPatched) return;
     originalFetch = window.fetch;
     window.fetch = async function (input, init) {
-        // 恢复中的请求直接放过，不做快照
-        if (isRestoring) return originalFetch.apply(this, arguments);
+        // 不在恢复中才做快照
+        if (!isRestoring) {
+            try {
+                var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
 
-        try {
-            var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-            var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-
-            if (method === 'POST' && (url.indexOf('/api/settings/save') !== -1 || url.indexOf('/api/presets/save') !== -1)) {
+                if (method === 'POST' && (url.indexOf('/api/settings/save') !== -1 || url.indexOf('/api/presets/save') !== -1)) {
                 var settings = getSettings();
                 if (settings.autoSnapshot) {
                     try {
@@ -293,6 +292,7 @@ function installFetchInterceptor() {
         } catch (e) {
             console.warn('[PresetHistory] Interceptor error:', e);
         }
+        } // end if (!isRestoring)
         return originalFetch.apply(this, arguments);
     };
     fetchPatched = true;
@@ -434,41 +434,52 @@ function diffPresets(oldData, newData, mode) {
 
 // ========== 恢复 ==========
 
-async function restoreSnapshot(presetName, snap) {
-    // 恢复 = 把快照里的字段写回 settings body，然后发请求
-    if (!lastInterceptedBody) {
-        toastr.error('还没有拦截到过设置数据，请先保存一次预设再试。');
-        return false;
+// 从 session cookie 里提取 CSRF 令牌
+// ST 把 CSRF token 存在 session cookie 里，格式是 base64 编码的 JSON: {"csrfToken":"xxx"}
+function getCsrfToken() {
+    try {
+        var cookies = document.cookie.split(';');
+        for (var i = 0; i < cookies.length; i++) {
+            var c = cookies[i].trim();
+            // session cookie 的名字是 session-xxxxxxxx=base64data
+            if (c.match(/^session-[a-f0-9]+=/) && !c.includes('.sig')) {
+                var val = c.split('=').slice(1).join('=');
+                var decoded = atob(val);
+                var obj = JSON.parse(decoded);
+                if (obj.csrfToken) return obj.csrfToken;
+            }
+        }
+    } catch (e) {
+        console.warn('[PresetHistory] Failed to extract CSRF token:', e);
     }
+    return '';
+}
+
+async function restoreSnapshot(presetName, snap) {
     try {
         // 先备份当前的
-        var currentInfo = extractPresetInfo(lastInterceptedBody);
-        if (currentInfo) {
-            saveSnapshot(currentInfo.name, currentInfo.data, 'manual', '恢复前的备份');
+        if (lastInterceptedBody) {
+            var currentInfo = extractPresetInfo(lastInterceptedBody);
+            if (currentInfo) {
+                saveSnapshot(currentInfo.name, currentInfo.data, 'manual', '恢复前的备份');
+            }
         }
 
-        // 把快照数据覆盖回去
-        var bodyToSend = deepClone(lastInterceptedBody);
-        var snapData = snap.data;
+        var bodyToSend = deepClone(snap.data);
 
-        // 把快照里的每个字段写回body
-        for (var field in snapData) {
-            bodyToSend[field] = deepClone(snapData[field]);
-        }
+        // 从cookie里拿CSRF令牌
+        var csrf = getCsrfToken();
+        var headers = { 'Content-Type': 'application/json' };
+        if (csrf) headers['X-Csrf-Token'] = csrf;
 
-        // 用 window.fetch 走完整链路（包含startup-optimizer的CSRF令牌注入）
-        // isRestoring 标记会让我们的拦截器跳过快照逻辑
-        isRestoring = true;
-        var resp;
-        try {
-            resp = await window.fetch('/api/settings/save', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(bodyToSend),
-            });
-        } finally {
-            isRestoring = false;
-        }
+        // 用originalFetch发到预设保存端点
+        var fetchFn = originalFetch || window.fetch;
+        var resp = await fetchFn.call(window, '/api/presets/save', {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(bodyToSend),
+        });
+
         if (!resp.ok) {
             toastr.error('恢复失败: ' + resp.status);
             return false;
