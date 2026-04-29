@@ -240,23 +240,18 @@ function getAllPresetNames() {
 
 var fetchPatched = false;
 var originalFetch = null;
-var capturedCsrfToken = ''; // 从正常请求中捕获CSRF令牌
+var isRestoring = false; // 恢复中标记，跳过拦截器的快照逻辑
 
 function installFetchInterceptor() {
     if (fetchPatched) return;
     originalFetch = window.fetch;
     window.fetch = async function (input, init) {
+        // 恢复中的请求直接放过，不做快照
+        if (isRestoring) return originalFetch.apply(this, arguments);
+
         try {
             var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
             var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-
-            // 从任何POST请求中捕获CSRF token
-            if (method === 'POST' && init && init.headers) {
-                var h = init.headers;
-                var token = h['X-Csrf-Token'] || h['x-csrf-token'];
-                if (!token && typeof h.get === 'function') token = h.get('X-Csrf-Token');
-                if (token) capturedCsrfToken = token;
-            }
 
             if (method === 'POST' && (url.indexOf('/api/settings/save') !== -1 || url.indexOf('/api/presets/save') !== -1)) {
                 var settings = getSettings();
@@ -461,26 +456,29 @@ async function restoreSnapshot(presetName, snap) {
             bodyToSend[field] = deepClone(snapData[field]);
         }
 
-        var fetchFn = originalFetch || window.fetch;
-        var headers = { 'Content-Type': 'application/json' };
-        if (capturedCsrfToken) headers['X-Csrf-Token'] = capturedCsrfToken;
-
-        // 先尝试 /api/presets/save（预设专用端点），失败再试 /api/settings/save
-        var resp = await fetchFn.call(window, '/api/presets/save', {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify(bodyToSend),
-        });
-        if (resp.status === 404) {
-            // 端点不存在，降级到 settings/save
-            resp = await fetchFn.call(window, '/api/settings/save', {
+        // 用 window.fetch 走完整链路（包含startup-optimizer的CSRF令牌注入）
+        // isRestoring 标记会让我们的拦截器跳过快照逻辑
+        isRestoring = true;
+        var resp;
+        try {
+            // 先尝试 /api/presets/save
+            resp = await window.fetch('/api/presets/save', {
                 method: 'POST',
-                headers: headers,
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(bodyToSend),
             });
+            if (resp.status === 404) {
+                resp = await window.fetch('/api/settings/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(bodyToSend),
+                });
+            }
+        } finally {
+            isRestoring = false;
         }
         if (!resp.ok) {
-            toastr.error('恢复失败: ' + resp.status + ' (CSRF: ' + (capturedCsrfToken ? '有' : '无') + ')');
+            toastr.error('恢复失败: ' + resp.status);
             return false;
         }
         toastr.success('已恢复，正在刷新页面...');
