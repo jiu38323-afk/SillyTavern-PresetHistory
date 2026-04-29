@@ -467,26 +467,26 @@ async function restoreSnapshot(presetName, snap) {
 
         var bodyToSend = deepClone(snap.data);
 
-        // 从cookie里拿CSRF令牌
-        var csrf = getCsrfToken();
+        // 通过ST自带的预设导入功能恢复（绕过CSRF问题）
+        // 把快照数据包装成File对象，塞进ST的导入文件输入框
+        var jsonStr = JSON.stringify(bodyToSend, null, 2);
+        var file = new File([jsonStr], presetName + '.json', { type: 'application/json' });
 
-        // 用 XMLHttpRequest 绕过所有 fetch 包装
-        var result = await new Promise(function (resolve) {
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/presets/save', true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            if (csrf) xhr.setRequestHeader('X-Csrf-Token', csrf);
-            xhr.onload = function () { resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status }); };
-            xhr.onerror = function () { resolve({ ok: false, status: 0 }); };
-            xhr.send(JSON.stringify(bodyToSend));
-        });
-
-        if (!result.ok) {
-            toastr.error('恢复失败: ' + result.status + ' (CSRF: ' + (csrf ? '有' : '无') + ')');
+        var $fileInput = jQuery('#openai_preset_import_file');
+        if ($fileInput.length === 0) {
+            toastr.error('找不到预设导入入口，请手动导入。');
             return false;
         }
-        toastr.success('已恢复，正在刷新页面...');
-        setTimeout(function () { location.reload(); }, 1500);
+
+        // 创建一个新的FileList塞进去
+        var dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        $fileInput[0].files = dataTransfer.files;
+
+        // 触发change事件，让ST的导入逻辑接管
+        $fileInput[0].dispatchEvent(new Event('change', { bubbles: true }));
+
+        toastr.success('正在通过导入恢复「' + presetName + '」...\n请在弹出的对话框中确认。');
         return true;
     } catch (e) {
         toastr.error('恢复失败: ' + e.message);
