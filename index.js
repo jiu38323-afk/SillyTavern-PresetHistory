@@ -300,8 +300,6 @@ function installFetchInterceptor() {
  * 对比两组预设数据的差异
  * oldData = 旧版本, newData = 新版本
  * mode = 'changelog'(自动标签用) 或 'restore'(恢复确认用)
- * changelog: "删除了xxx" / "新增了xxx" / "修改了xxx"
- * restore: "恢复后会找回xxx" / "新增了xxx" / "xxx内容不同"
  */
 function diffPresets(oldData, newData, mode) {
     if (!mode) mode = 'restore';
@@ -310,57 +308,82 @@ function diffPresets(oldData, newData, mode) {
     var oldPrompts = (oldData && oldData.prompts) || [];
     var newPrompts = (newData && newData.prompts) || [];
 
-    if (oldPrompts.length === 0 && newPrompts.length === 0) {
-        if (JSON.stringify(oldData) !== JSON.stringify(newData)) {
-            diffs.push('预设内容有变化');
-        }
-        return diffs;
-    }
-
-    var oldMap = {};
+    // 条目内容索引 (identifier → prompt对象)
+    var oldContentMap = {};
     for (var i = 0; i < oldPrompts.length; i++) {
-        var oid = oldPrompts[i].identifier || ('idx_' + i);
-        oldMap[oid] = oldPrompts[i];
+        oldContentMap[oldPrompts[i].identifier] = oldPrompts[i];
     }
-    var newMap = {};
+    var newContentMap = {};
     for (var j = 0; j < newPrompts.length; j++) {
-        var nid = newPrompts[j].identifier || ('idx_' + j);
-        newMap[nid] = newPrompts[j];
+        newContentMap[newPrompts[j].identifier] = newPrompts[j];
     }
 
-    // 新数据有、旧数据没有 = 新增
-    for (var nk in newMap) {
-        if (!oldMap[nk]) {
-            diffs.push('新增了「' + (newMap[nk].name || '未命名') + '」');
+    // 从 prompt_order 里提取开关状态和顺序
+    // prompt_order 结构: [ { character_id, order: [{identifier, enabled}, ...] } ]
+    var oldOrder = [];
+    var newOrder = [];
+    var oldEnabledMap = {};
+    var newEnabledMap = {};
+
+    var oldPO = (oldData && oldData.prompt_order) || [];
+    var newPO = (newData && newData.prompt_order) || [];
+    if (oldPO.length > 0 && oldPO[0] && oldPO[0].order) {
+        oldOrder = oldPO[0].order;
+        for (var oi = 0; oi < oldOrder.length; oi++) {
+            oldEnabledMap[oldOrder[oi].identifier] = !!oldOrder[oi].enabled;
+        }
+    }
+    if (newPO.length > 0 && newPO[0] && newPO[0].order) {
+        newOrder = newPO[0].order;
+        for (var ni = 0; ni < newOrder.length; ni++) {
+            newEnabledMap[newOrder[ni].identifier] = !!newOrder[ni].enabled;
         }
     }
 
-    // 旧数据有、新数据没有 = 删除/恢复
-    for (var ok in oldMap) {
-        if (!newMap[ok]) {
+    // 用来查名字的辅助函数
+    function getName(id) {
+        if (newContentMap[id]) return newContentMap[id].name || '未命名';
+        if (oldContentMap[id]) return oldContentMap[id].name || '未命名';
+        return '未命名';
+    }
+
+    // 新增的条目（新order里有、旧order里没有）
+    for (var nk in newEnabledMap) {
+        if (oldEnabledMap[nk] === undefined) {
+            diffs.push('新增了「' + getName(nk) + '」');
+        }
+    }
+
+    // 删除的条目（旧order里有、新order里没有）
+    for (var ok in oldEnabledMap) {
+        if (newEnabledMap[ok] === undefined) {
             if (mode === 'changelog') {
-                diffs.push('删除了「' + (oldMap[ok].name || '未命名') + '」');
+                diffs.push('删除了「' + getName(ok) + '」');
             } else {
-                diffs.push('恢复后会找回「' + (oldMap[ok].name || '未命名') + '」');
+                diffs.push('恢复后会找回「' + getName(ok) + '」');
             }
         }
     }
 
-    // 修改的
-    for (var mk in newMap) {
-        if (oldMap[mk]) {
-            var op = oldMap[mk];
-            var np = newMap[mk];
+    // 开关变化
+    for (var ek in oldEnabledMap) {
+        if (newEnabledMap[ek] !== undefined && oldEnabledMap[ek] !== newEnabledMap[ek]) {
+            if (mode === 'changelog') {
+                diffs.push((newEnabledMap[ek] ? '开启' : '关闭') + '了「' + getName(ek) + '」');
+            } else {
+                diffs.push('「' + getName(ek) + '」' + (newEnabledMap[ek] ? '会被开启' : '会被关闭'));
+            }
+        }
+    }
+
+    // 内容修改（比较prompts数组里的content和name）
+    for (var mk in oldContentMap) {
+        if (newContentMap[mk]) {
+            var op = oldContentMap[mk];
+            var np = newContentMap[mk];
             var changes = [];
             if ((op.content || '') !== (np.content || '')) changes.push('内容');
             if ((op.name || '') !== (np.name || '')) changes.push('名称');
-            if (!!op.enabled !== !!np.enabled) {
-                if (mode === 'changelog') {
-                    changes.push(np.enabled ? '开启' : '关闭');
-                } else {
-                    changes.push(np.enabled ? '会被开启' : '会被关闭');
-                }
-            }
             if (changes.length > 0) {
                 if (mode === 'changelog') {
                     diffs.push('修改了「' + (np.name || '未命名') + '」' + changes.join('、'));
@@ -372,10 +395,15 @@ function diffPresets(oldData, newData, mode) {
     }
 
     // 顺序变化
-    var oldOrder = oldPrompts.map(function (p) { return p.identifier; }).join(',');
-    var newOrder = newPrompts.map(function (p) { return p.identifier; }).join(',');
-    if (oldOrder !== newOrder && oldPrompts.length > 0 && newPrompts.length > 0) {
-        diffs.push('条目顺序变化');
+    var oldIds = oldOrder.map(function (x) { return x.identifier; }).join(',');
+    var newIds = newOrder.map(function (x) { return x.identifier; }).join(',');
+    if (oldIds !== newIds && oldOrder.length > 0 && newOrder.length > 0) {
+        // 排除纯增删导致的顺序差异，只看共有条目的相对顺序
+        var commonOld = oldOrder.filter(function (x) { return newEnabledMap[x.identifier] !== undefined; }).map(function (x) { return x.identifier; });
+        var commonNew = newOrder.filter(function (x) { return oldEnabledMap[x.identifier] !== undefined; }).map(function (x) { return x.identifier; });
+        if (commonOld.join(',') !== commonNew.join(',')) {
+            diffs.push('条目顺序变化');
+        }
     }
 
     // 参数变化
