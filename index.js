@@ -161,9 +161,19 @@ function extractPresetInfo(body) {
 // ========== 快照核心 ==========
 
 function saveSnapshot(presetName, data, source, customLabel) {
-    var serialized;
-    try { serialized = JSON.stringify(data); } catch (e) { return null; }
-    var h = hash(serialized);
+    // 去重只比对核心内容（条目内容+顺序），忽略每次保存都会变的字段
+    var coreData = {};
+    if (data.prompts) coreData.prompts = data.prompts;
+    if (data.prompt_order) coreData.prompt_order = data.prompt_order;
+
+    var coreStr;
+    try { coreStr = JSON.stringify(coreData); } catch (e) { return null; }
+    var h = hash(coreStr);
+
+    // 如果核心内容是空的（没有prompts），用完整数据做hash
+    if (!data.prompts && !data.prompt_order) {
+        try { h = hash(JSON.stringify(data)); } catch (e) { return null; }
+    }
 
     var settings = getSettings();
     var key = presetName;
@@ -237,7 +247,22 @@ function installFetchInterceptor() {
                             lastInterceptedBody = parsed; // 缓存给手动备份用
                             var info = extractPresetInfo(parsed);
                             if (info) {
-                                var snap = saveSnapshot(info.name, info.data, 'auto', '');
+                                // 自动生成标签：对比上一个备份找出改了什么
+                                var autoLabel = '';
+                                var existingSnaps = getSnapshots(info.name);
+                                if (existingSnaps.length > 0) {
+                                    var diffs = diffPresets(existingSnaps[0].data, info.data);
+                                    // 过滤掉"没有检测到差异"
+                                    var realDiffs = diffs.filter(function (d) { return d !== '没有检测到差异'; });
+                                    if (realDiffs.length > 0) {
+                                        autoLabel = realDiffs.slice(0, 3).join('；');
+                                    } else {
+                                        autoLabel = '自动备份';
+                                    }
+                                } else {
+                                    autoLabel = '首次备份';
+                                }
+                                var snap = saveSnapshot(info.name, info.data, 'auto', autoLabel);
                                 if (snap) {
                                     console.log('[PresetHistory] 自动备份: ' + info.name);
                                     setTimeout(renderSnapshotList, 0);
