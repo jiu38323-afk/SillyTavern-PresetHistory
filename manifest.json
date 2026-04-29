@@ -1,13 +1,13 @@
 {
-    "display_name": "Preset History",
+    "display_name": "Preset History (预设历史版本)",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "dependencies": [],
     "js": "index.js",
-    "css": "style.css",
+    "css": "",
     "author": "Elvis & 小九",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "homePage": "https://github.com/jiu38323-afk/SillyTavern-PresetHistory",
     "auto_update": true
 }
