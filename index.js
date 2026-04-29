@@ -570,8 +570,12 @@ function triggerPresetSave() {
         if (!s.autoSavePreset) return;
         var $btn = jQuery('#update_oai_preset');
         if ($btn.length) {
+            // 静默保存：临时屏蔽toastr提示
+            var origSuccess = toastr.success;
+            toastr.success = function () {};
             $btn.trigger('click');
-            console.log('[PresetHistory] 自动保存预设');
+            setTimeout(function () { toastr.success = origSuccess; }, 500);
+            console.log('[PresetHistory] 静默自动保存预设');
         }
     }, 2000);
 }
