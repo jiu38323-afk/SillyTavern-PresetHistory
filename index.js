@@ -312,7 +312,7 @@ function addUI() {
 
         + '<div style="margin:6px 0">'
         + '<input id="ph_manual_label" type="text" placeholder="可选备注，例如「调温度之前」..." style="width:100%;box-sizing:border-box;margin-bottom:6px" />'
-        + '<button id="ph_manual_now" class="menu_button" style="font-size:12px;padding:4px 8px">📸 立即备份当前状态</button>'
+        + '<button id="ph_manual_now" class="menu_button" style="font-size:12px;padding:6px 12px;width:100%;white-space:nowrap;writing-mode:horizontal-tb">📸 立即备份当前状态</button>'
         + '<br/><small style="opacity:0.6">需要先保存过一次预设才能用。</small>'
         + '</div>'
 
@@ -347,6 +347,21 @@ function addUI() {
     });
     jQuery('#ph_manual_now').on('click', manualSnapshotNow);
     jQuery('#ph_filter_name').on('change', renderSnapshotList);
+
+    // 监听ST的预设下拉菜单变化，自动跟着切换
+    var presetSelectors = ['#settings_perset_openai', '#settings_preset_openai'];
+    for (var pi = 0; pi < presetSelectors.length; pi++) {
+        var $ps = jQuery(presetSelectors[pi]);
+        if ($ps.length) {
+            $ps.on('change', function () {
+                // 重置选择，让renderNameFilter自动选中新的当前预设
+                jQuery('#ph_filter_name').val('');
+                renderSnapshotList();
+            });
+            break;
+        }
+    }
+
     renderSnapshotList();
 }
 
@@ -355,12 +370,14 @@ function renderNameFilter() {
     var cur = $sel.val();
     $sel.empty();
 
-    // 从ST页面上的预设下拉菜单读取所有预设名字
+    // 从ST页面上的预设下拉菜单读取所有预设名字 + 当前选中的预设
     var allPresets = [];
+    var currentSTPreset = '';
     var presetSelectors = ['#settings_perset_openai', '#settings_preset_openai', 'select[name="preset_openai"]'];
     for (var si = 0; si < presetSelectors.length; si++) {
         var $stSelect = jQuery(presetSelectors[si]);
         if ($stSelect.length) {
+            currentSTPreset = $stSelect.find('option:selected').text().trim();
             $stSelect.find('option').each(function () {
                 var val = jQuery(this).val();
                 var text = jQuery(this).text().trim();
@@ -377,21 +394,30 @@ function renderNameFilter() {
         backupMap[backedUp[i].name] = backedUp[i].count;
     }
 
-    // 合并：先列有备份的预设在前面，再列没备份的
+    // 合并：当前预设排第一，有备份的排前面，没备份的排后面
     var seen = {};
     var options = [];
+
+    // 当前预设排第一
+    if (currentSTPreset) {
+        var count = backupMap[currentSTPreset] || 0;
+        options.push({ name: currentSTPreset, count: count, current: true });
+        seen[currentSTPreset] = true;
+    }
 
     // 有备份的排前面
     for (var b = 0; b < backedUp.length; b++) {
         var bName = backedUp[b].name;
-        options.push({ name: bName, count: backedUp[b].count });
-        seen[bName] = true;
+        if (!seen[bName]) {
+            options.push({ name: bName, count: backedUp[b].count, current: false });
+            seen[bName] = true;
+        }
     }
 
     // 没备份的排后面
     for (var a = 0; a < allPresets.length; a++) {
         if (!seen[allPresets[a]]) {
-            options.push({ name: allPresets[a], count: 0 });
+            options.push({ name: allPresets[a], count: 0, current: false });
             seen[allPresets[a]] = true;
         }
     }
@@ -403,10 +429,19 @@ function renderNameFilter() {
 
     for (var j = 0; j < options.length; j++) {
         var displayName = escapeHTML(options[j].name);
+        var prefix = options[j].current ? '▶ ' : '';
         var suffix = options[j].count > 0 ? ' — ' + options[j].count + ' 个备份' : ' — 未备份';
-        $sel.append('<option value="' + displayName + '">' + displayName + suffix + '</option>');
+        $sel.append('<option value="' + displayName + '">' + prefix + displayName + suffix + '</option>');
     }
-    if (cur && options.find(function (x) { return x.name === cur; })) $sel.val(cur);
+
+    // 优先选当前ST预设，否则保持用户之前的选择
+    if (currentSTPreset && !cur) {
+        $sel.val(escapeHTML(currentSTPreset));
+    } else if (cur && options.find(function (x) { return x.name === cur; })) {
+        $sel.val(cur);
+    } else if (currentSTPreset) {
+        $sel.val(escapeHTML(currentSTPreset));
+    }
 }
 
 function renderSnapshotList() {
