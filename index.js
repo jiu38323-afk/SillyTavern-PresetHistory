@@ -241,6 +241,7 @@ function getAllPresetNames() {
 var fetchPatched = false;
 var originalFetch = null;
 var isRestoring = false; // 恢复中标记，跳过拦截器的快照逻辑
+var restoreSuppressUntil = 0; // 恢复后抑制自动备份的时间戳
 
 function installFetchInterceptor() {
     if (fetchPatched) return;
@@ -254,7 +255,8 @@ function installFetchInterceptor() {
 
                 if (method === 'POST' && (url.indexOf('/api/settings/save') !== -1 || url.indexOf('/api/presets/save') !== -1)) {
                 var settings = getSettings();
-                if (settings.autoSnapshot) {
+                // 恢复抑制期内跳过自动备份
+                if (settings.autoSnapshot && Date.now() > restoreSuppressUntil) {
                     try {
                         var body = init && init.body;
                         if (typeof body === 'string') {
@@ -352,18 +354,36 @@ function diffPresets(oldData, newData, mode) {
         return '未命名';
     }
 
-    // 新增的条目（新order里有、旧order里没有）
-    for (var nk in newEnabledMap) {
-        if (oldEnabledMap[nk] === undefined) {
-            diffs.push('新增了「' + getName(nk) + '」');
+    // 新增的条目：区分"创建"和"绑定"
+    // prompts里新增但order里没有 = 创建了条目（还没绑定）
+    for (var pk in newContentMap) {
+        if (!oldContentMap[pk] && !newEnabledMap[pk]) {
+            if (mode === 'changelog') {
+                diffs.push('创建了条目「' + getName(pk) + '」');
+            } else {
+                diffs.push('「' + getName(pk) + '」会被创建');
+            }
         }
     }
 
-    // 删除的条目（旧order里有、新order里没有）
+    // order里新增 = 绑定到预设
+    for (var nk in newEnabledMap) {
+        if (oldEnabledMap[nk] === undefined) {
+            var isAlsoNewInPrompts = !oldContentMap[nk];
+            if (mode === 'changelog') {
+                diffs.push((isAlsoNewInPrompts ? '新增了' : '绑定了') + '「' + getName(nk) + '」');
+            } else {
+                diffs.push('「' + getName(nk) + '」' + (isAlsoNewInPrompts ? '会被新增' : '会被绑定'));
+            }
+        }
+    }
+
+    // 删除的条目：区分"从预设移除"和"彻底删除"
     for (var ok in oldEnabledMap) {
         if (newEnabledMap[ok] === undefined) {
+            var stillInPrompts = !!newContentMap[ok];
             if (mode === 'changelog') {
-                diffs.push('删除了「' + getName(ok) + '」');
+                diffs.push((stillInPrompts ? '从预设移除了' : '删除了') + '「' + getName(ok) + '」');
             } else {
                 diffs.push('恢复后会找回「' + getName(ok) + '」');
             }
@@ -485,6 +505,9 @@ async function restoreSnapshot(presetName, snap) {
 
         // 触发change事件，让ST的导入逻辑接管
         $fileInput[0].dispatchEvent(new Event('input', { bubbles: true }));
+
+        // 抑制接下来10秒的自动备份（恢复导入会触发保存，不需要再备份）
+        restoreSuppressUntil = Date.now() + 10000;
 
         toastr.success('正在通过导入恢复「' + presetName + '」...\n请在弹出的对话框中确认。');
         return true;
