@@ -169,8 +169,18 @@ function saveSnapshot(presetName, data, source, customLabel) {
     var key = presetName;
     var existing = settings.snapshots[key] || [];
 
-    // 自动模式去重
-    if (source === 'auto' && existing.length > 0 && existing[0].hash === h) return null;
+    if (source === 'auto') {
+        if (existing.length === 0) {
+            // 没备份过 → 存第一份作为基线
+            console.log('[PresetHistory] 首次备份: ' + presetName);
+        } else if (existing[0].hash === h) {
+            // 有备份，内容一样 → 跳过
+            return null;
+        } else {
+            // 有备份，内容不同 → 存新版本
+            console.log('[PresetHistory] 内容变化，备份: ' + presetName);
+        }
+    }
 
     var snap = {
         id: newId(),
@@ -246,6 +256,97 @@ function installFetchInterceptor() {
     };
     fetchPatched = true;
     console.log('[PresetHistory] 拦截器已安装');
+}
+
+// ========== 对比 ==========
+
+/**
+ * 对比当前预设和备份快照的差异
+ * 返回人话描述的差异列表
+ */
+function diffPresets(currentData, snapData) {
+    var diffs = [];
+
+    var curPrompts = (currentData && currentData.prompts) || [];
+    var snapPrompts = (snapData && snapData.prompts) || [];
+
+    // 如果两边都没有prompts字段，直接比整体
+    if (curPrompts.length === 0 && snapPrompts.length === 0) {
+        if (JSON.stringify(currentData) !== JSON.stringify(snapData)) {
+            diffs.push('预设内容有变化');
+        }
+        return diffs;
+    }
+
+    // 按identifier建索引
+    var curMap = {};
+    for (var i = 0; i < curPrompts.length; i++) {
+        var id = curPrompts[i].identifier || ('idx_' + i);
+        curMap[id] = curPrompts[i];
+    }
+    var snapMap = {};
+    for (var j = 0; j < snapPrompts.length; j++) {
+        var sid = snapPrompts[j].identifier || ('idx_' + j);
+        snapMap[sid] = snapPrompts[j];
+    }
+
+    // 找新增的（当前有、备份没有）
+    for (var ck in curMap) {
+        if (!snapMap[ck]) {
+            diffs.push('新增了「' + (curMap[ck].name || '未命名') + '」');
+        }
+    }
+
+    // 找删除的（备份有、当前没有）→ 恢复后会回来
+    for (var sk in snapMap) {
+        if (!curMap[sk]) {
+            diffs.push('恢复后会找回「' + (snapMap[sk].name || '未命名') + '」');
+        }
+    }
+
+    // 找修改的
+    for (var mk in curMap) {
+        if (snapMap[mk]) {
+            var cp = curMap[mk];
+            var sp = snapMap[mk];
+            var changes = [];
+            if ((cp.content || '') !== (sp.content || '')) changes.push('内容');
+            if ((cp.name || '') !== (sp.name || '')) changes.push('名称');
+            if (!!cp.enabled !== !!sp.enabled) {
+                changes.push(sp.enabled ? '会被开启' : '会被关闭');
+            }
+            if (changes.length > 0) {
+                diffs.push('「' + (cp.name || '未命名') + '」' + changes.join('、') + '不同');
+            }
+        }
+    }
+
+    // 顺序变化
+    var curOrder = curPrompts.map(function (p) { return p.identifier; }).join(',');
+    var snapOrder = snapPrompts.map(function (p) { return p.identifier; }).join(',');
+    if (curOrder !== snapOrder && curPrompts.length > 0 && snapPrompts.length > 0) {
+        diffs.push('条目顺序不同');
+    }
+
+    // 非prompt字段变化（设置参数）
+    var settingFields = ['temp_openai', 'top_p_openai', 'freq_pen_openai', 'pres_pen_openai',
+        'openai_max_context', 'openai_max_tokens', 'min_p_openai', 'top_k_openai'];
+    var settingChanges = [];
+    for (var sf = 0; sf < settingFields.length; sf++) {
+        var field = settingFields[sf];
+        if (currentData[field] !== undefined && snapData[field] !== undefined && currentData[field] !== snapData[field]) {
+            settingChanges.push(field.replace(/_openai$/, '').replace(/_/g, ' '));
+        }
+    }
+    if (settingChanges.length > 0) {
+        diffs.push('参数变化: ' + settingChanges.join(', '));
+    }
+
+    if (diffs.length === 0) {
+        diffs.push('没有检测到差异');
+    }
+
+    return diffs;
 }
 
 // ========== 恢复 ==========
@@ -477,7 +578,16 @@ function renderSnapshotList() {
                 + '</div></div>'
             );
             $item.find('.ph-restore').on('click', async function () {
-                if (!confirm('要把「' + name + '」恢复到这个版本吗？\n' + snap.label + '\n' + fmtTime(snap.ts) + '\n\n当前预设会被覆盖，页面会自动刷新。')) return;
+                // 对比当前和备份的差异
+                var diffText = '';
+                if (lastInterceptedBody) {
+                    var currentInfo = extractPresetInfo(lastInterceptedBody);
+                    if (currentInfo) {
+                        var diffs = diffPresets(currentInfo.data, snap.data);
+                        diffText = '\n\n【当前 vs 备份的区别】\n' + diffs.join('\n');
+                    }
+                }
+                if (!confirm('要把「' + name + '」恢复到这个版本吗？\n' + snap.label + '\n' + fmtTime(snap.ts) + diffText + '\n\n当前预设会被覆盖，页面会自动刷新。')) return;
                 await restoreSnapshot(name, snap);
             });
             $item.find('.ph-export').on('click', function () {
