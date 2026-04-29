@@ -197,6 +197,11 @@ function saveSnapshot(presetName, data, source, customLabel) {
         } else if (existing[0].hash === h) {
             // 有备份，内容一样 → 跳过
             return null;
+        } else if (restoredToHash && restoredToHash === h) {
+            // 刚恢复到这个版本，跳过（不重复存恢复后的状态）
+            console.log('[PresetHistory] 恢复后的保存，跳过');
+            restoredToHash = '';
+            return null;
         } else {
             // 有备份，内容不同 → 存新版本
             console.log('[PresetHistory] 内容变化，备份: ' + presetName);
@@ -240,8 +245,8 @@ function getAllPresetNames() {
 
 var fetchPatched = false;
 var originalFetch = null;
-var isRestoring = false; // 恢复中标记，跳过拦截器的快照逻辑
-var restoreSuppressUntil = 0; // 恢复后抑制自动备份的时间戳
+var isRestoring = false;
+var restoredToHash = ''; // 刚恢复到的版本的hash，用于跳过恢复后的重复备份
 
 function installFetchInterceptor() {
     if (fetchPatched) return;
@@ -256,7 +261,7 @@ function installFetchInterceptor() {
                 if (method === 'POST' && (url.indexOf('/api/settings/save') !== -1 || url.indexOf('/api/presets/save') !== -1)) {
                 var settings = getSettings();
                 // 恢复抑制期内跳过自动备份
-                if (settings.autoSnapshot && Date.now() > restoreSuppressUntil) {
+                if (settings.autoSnapshot) {
                     try {
                         var body = init && init.body;
                         if (typeof body === 'string') {
@@ -503,11 +508,11 @@ async function restoreSnapshot(presetName, snap) {
         dataTransfer.items.add(file);
         $fileInput[0].files = dataTransfer.files;
 
+        // 记录恢复目标的hash，恢复后的自动保存如果匹配就跳过
+        restoredToHash = snap.hash || '';
+
         // 触发change事件，让ST的导入逻辑接管
         $fileInput[0].dispatchEvent(new Event('input', { bubbles: true }));
-
-        // 抑制接下来10秒的自动备份（恢复导入会触发保存，不需要再备份）
-        restoreSuppressUntil = Date.now() + 10000;
 
         toastr.success('正在通过导入恢复「' + presetName + '」...\n请在弹出的对话框中确认。');
         return true;
