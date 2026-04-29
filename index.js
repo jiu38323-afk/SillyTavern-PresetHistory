@@ -104,25 +104,17 @@ function extractPresetInfo(body) {
     }
 
     // 方案B：如果没有独立的对象，说明预设字段直接铺在 body 顶层
-    // 典型的聊天补全字段：temp_openai, top_p_openai, openai_max_context 等
+    // 用特征字段检测是不是预设数据，确认后保存全部字段
     if (!presetData) {
-        var ccFields = ['temp_openai', 'top_p_openai', 'freq_pen_openai', 'pres_pen_openai',
-            'openai_max_context', 'openai_max_tokens', 'stream_openai',
-            'chat_completion_source', 'openai_model', 'claude_model',
-            'main_prompt', 'jailbreak_prompt', 'nsfw_prompt',
-            'new_chat_prompt', 'new_group_chat_prompt', 'continue_nudge_prompt',
-            'prompts', 'prompt_order'];
-        var extracted = {};
+        var checkFields = ['temp_openai', 'top_p_openai', 'freq_pen_openai',
+            'openai_max_context', 'stream_openai', 'prompts', 'prompt_order'];
         var found = 0;
-        for (var k = 0; k < ccFields.length; k++) {
-            if (body[ccFields[k]] !== undefined) {
-                extracted[ccFields[k]] = body[ccFields[k]];
-                found++;
-            }
+        for (var k = 0; k < checkFields.length; k++) {
+            if (body[checkFields[k]] !== undefined) found++;
         }
-        // 至少找到5个字段才认为有效
+        // 至少找到5个特征字段 → 确认是预设数据 → 保存body全部字段
         if (found >= 5) {
-            presetData = extracted;
+            presetData = body;
         }
     }
 
@@ -486,7 +478,7 @@ async function restoreSnapshot(presetName, snap) {
         if (lastInterceptedBody) {
             var currentInfo = extractPresetInfo(lastInterceptedBody);
             if (currentInfo) {
-                saveSnapshot(currentInfo.name, currentInfo.data, 'manual', '恢复前的备份');
+                saveSnapshot(currentInfo.name, currentInfo.data, 'manual', '已恢复至版本：' + snap.label);
             }
         }
 
