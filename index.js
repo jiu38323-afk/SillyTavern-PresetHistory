@@ -17,8 +17,9 @@ const DEFAULTS = {
     enabled: true,
     autoSnapshot: true,
     autoSavePreset: false,
-    lockParams: false,    // 锁定参数（温度、top_p等）
-    lockPrompts: false,   // 锁定条目（内容、顺序、开关）
+    lockParams: false,
+    lockPrompts: false,
+    watermarkUserId: '',  // 溯源码user_id，从预设文件中提取一次
     maxSnapshotsPerPreset: 30,
     snapshots: {},
 };
@@ -485,7 +486,7 @@ async function restoreSnapshot(presetName, snap) {
             }
         }
 
-        var bodyToSend = deepClone(snap.data);
+        var bodyToSend = injectWatermark(snap.data);
 
         // 通过ST自带的预设导入功能恢复（绕过CSRF问题）
         // 把快照数据包装成File对象，塞进ST的导入文件输入框
@@ -515,6 +516,30 @@ async function restoreSnapshot(presetName, snap) {
         toastr.error('恢复失败: ' + e.message);
         return false;
     }
+}
+
+// ========== 溯源码保护 ==========
+
+function updateWatermarkStatus() {
+    var s = getSettings();
+    var $status = jQuery('#ph_watermark_status');
+    if ($status.length === 0) return;
+    if (s.watermarkUserId) {
+        $status.html('<span style="color:#4caf50">✅ 已设置（ID: ' + escapeHTML(s.watermarkUserId.slice(-8)) + '...）</span>');
+    } else {
+        $status.html('<span style="color:#ff9800">⚠️ 未设置。恢复和导出时溯源码可能丢失。</span>');
+    }
+}
+
+function injectWatermark(data) {
+    var s = getSettings();
+    if (!s.watermarkUserId) return data;
+    var result = deepClone(data);
+    result.__watermark__ = {
+        user_id: s.watermarkUserId,
+        timestamp: Math.floor(Date.now() / 1000),
+    };
+    return result;
 }
 
 // ========== 锁定功能 ==========
@@ -631,6 +656,18 @@ function addUI() {
         + '<label class="checkbox_label"><input id="ph_lock_prompts" type="checkbox" /><span>🔒 锁定条目</span></label>'
         + '<small style="display:block;opacity:0.6;margin-bottom:8px">锁住条目的内容编辑、开关和顺序拖拽。</small>'
 
+        + '<hr style="margin:8px 0" />'
+
+        + '<div style="margin:6px 0">'
+        + '<label style="display:block;margin-bottom:4px;font-weight:600">🔑 溯源码保护</label>'
+        + '<div id="ph_watermark_status" style="margin-bottom:4px"></div>'
+        + '<input id="ph_watermark_file" type="file" accept=".json" style="display:none" />'
+        + '<button id="ph_watermark_setup" class="menu_button" style="font-size:12px;padding:6px 12px;width:100%;white-space:nowrap;writing-mode:horizontal-tb">📂 从预设文件读取溯源码</button>'
+        + '<small style="display:block;opacity:0.6;margin-top:4px">上传任意一个你的预设文件，自动提取溯源码。只需做一次。</small>'
+        + '</div>'
+
+        + '<hr style="margin:8px 0" />'
+
         + '<div style="margin:6px 0"><label>每个预设最多保留 <input id="ph_max_snapshots" type="number" min="1" max="500" style="width:60px" /> 个版本</label>'
         + '<br/><small style="opacity:0.6">超出后自动删除最老的。</small></div>'
 
@@ -682,6 +719,35 @@ function addUI() {
     });
 
     applyLocks();
+
+    // 溯源码保护
+    updateWatermarkStatus();
+    jQuery('#ph_watermark_setup').on('click', function () {
+        jQuery('#ph_watermark_file').trigger('click');
+    });
+    jQuery('#ph_watermark_file').on('change', function () {
+        var file = this.files && this.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            try {
+                var data = JSON.parse(e.target.result);
+                if (data.__watermark__ && data.__watermark__.user_id) {
+                    s.watermarkUserId = data.__watermark__.user_id;
+                    saveSettingsDebounced();
+                    toastr.success('溯源码已提取并保存！');
+                    updateWatermarkStatus();
+                } else {
+                    toastr.warning('这个文件里没有找到溯源码。');
+                }
+            } catch (err) {
+                toastr.error('文件解析失败：' + err.message);
+            }
+        };
+        reader.readAsText(file);
+        this.value = ''; // 清空让同一文件可以再次选择
+    });
+
     jQuery('#ph_max_snapshots').val(s.maxSnapshotsPerPreset).on('change', function () {
         var v = parseInt(this.value, 10);
         if (!isNaN(v) && v > 0 && v <= 500) {
@@ -837,7 +903,13 @@ function renderSnapshotList() {
                 await restoreSnapshot(name, snap);
             });
             $item.find('.ph-export').on('click', function () {
-                var blob = new Blob([JSON.stringify(snap.data, null, 2)], { type: 'application/json' });
+                var pwd = prompt('请输入导出密码：');
+                if (pwd !== 'elvis0324') {
+                    toastr.error('密码错误。');
+                    return;
+                }
+                var exportData = injectWatermark(snap.data);
+                var blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
                 var url = URL.createObjectURL(blob);
                 var a = document.createElement('a');
                 a.href = url;
