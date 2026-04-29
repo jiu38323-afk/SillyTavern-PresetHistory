@@ -469,19 +469,20 @@ async function restoreSnapshot(presetName, snap) {
 
         // 从cookie里拿CSRF令牌
         var csrf = getCsrfToken();
-        var headers = { 'Content-Type': 'application/json' };
-        if (csrf) headers['X-Csrf-Token'] = csrf;
 
-        // 用originalFetch发到预设保存端点
-        var fetchFn = originalFetch || window.fetch;
-        var resp = await fetchFn.call(window, '/api/presets/save', {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify(bodyToSend),
+        // 用 XMLHttpRequest 绕过所有 fetch 包装
+        var result = await new Promise(function (resolve) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/presets/save', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            if (csrf) xhr.setRequestHeader('X-Csrf-Token', csrf);
+            xhr.onload = function () { resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status }); };
+            xhr.onerror = function () { resolve({ ok: false, status: 0 }); };
+            xhr.send(JSON.stringify(bodyToSend));
         });
 
-        if (!resp.ok) {
-            toastr.error('恢复失败: ' + resp.status);
+        if (!result.ok) {
+            toastr.error('恢复失败: ' + result.status + ' (CSRF: ' + (csrf ? '有' : '无') + ')');
             return false;
         }
         toastr.success('已恢复，正在刷新页面...');
