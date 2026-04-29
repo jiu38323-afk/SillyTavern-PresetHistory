@@ -338,17 +338,61 @@ function addUI() {
 
 function renderNameFilter() {
     var $sel = jQuery('#ph_filter_name');
-    var names = getAllPresetNames();
     var cur = $sel.val();
     $sel.empty();
-    if (names.length === 0) {
-        $sel.append('<option value="">(还没有备份)</option>');
+
+    // 从ST页面上的预设下拉菜单读取所有预设名字
+    var allPresets = [];
+    var presetSelectors = ['#settings_perset_openai', '#settings_preset_openai', 'select[name="preset_openai"]'];
+    for (var si = 0; si < presetSelectors.length; si++) {
+        var $stSelect = jQuery(presetSelectors[si]);
+        if ($stSelect.length) {
+            $stSelect.find('option').each(function () {
+                var val = jQuery(this).val();
+                var text = jQuery(this).text().trim();
+                if (val && text) allPresets.push(text);
+            });
+            break;
+        }
+    }
+
+    // 获取有备份的预设
+    var backedUp = getAllPresetNames();
+    var backupMap = {};
+    for (var i = 0; i < backedUp.length; i++) {
+        backupMap[backedUp[i].name] = backedUp[i].count;
+    }
+
+    // 合并：先列有备份的预设在前面，再列没备份的
+    var seen = {};
+    var options = [];
+
+    // 有备份的排前面
+    for (var b = 0; b < backedUp.length; b++) {
+        var bName = backedUp[b].name;
+        options.push({ name: bName, count: backedUp[b].count });
+        seen[bName] = true;
+    }
+
+    // 没备份的排后面
+    for (var a = 0; a < allPresets.length; a++) {
+        if (!seen[allPresets[a]]) {
+            options.push({ name: allPresets[a], count: 0 });
+            seen[allPresets[a]] = true;
+        }
+    }
+
+    if (options.length === 0) {
+        $sel.append('<option value="">(还没有预设)</option>');
         return;
     }
-    for (var i = 0; i < names.length; i++) {
-        $sel.append('<option value="' + escapeHTML(names[i].name) + '">' + escapeHTML(names[i].name) + ' — ' + names[i].count + ' 个备份</option>');
+
+    for (var j = 0; j < options.length; j++) {
+        var displayName = escapeHTML(options[j].name);
+        var suffix = options[j].count > 0 ? ' — ' + options[j].count + ' 个备份' : ' — 未备份';
+        $sel.append('<option value="' + displayName + '">' + displayName + suffix + '</option>');
     }
-    if (cur && names.find(function (x) { return x.name === cur; })) $sel.val(cur);
+    if (cur && options.find(function (x) { return x.name === cur; })) $sel.val(cur);
 }
 
 function renderSnapshotList() {
@@ -434,6 +478,21 @@ function manualSnapshotNow() {
 
 jQuery(async function () {
     getSettings();
+
+    // 清理旧版本(v2.1)残留的带 :: 前缀的数据
+    var s = getSettings();
+    var keysToDelete = [];
+    for (var k in s.snapshots) {
+        if (k.indexOf('::') !== -1) keysToDelete.push(k);
+    }
+    if (keysToDelete.length > 0) {
+        for (var d = 0; d < keysToDelete.length; d++) {
+            delete s.snapshots[keysToDelete[d]];
+        }
+        saveSettingsDebounced();
+        console.log('[PresetHistory] 已清理 ' + keysToDelete.length + ' 个旧版本残留数据');
+    }
+
     addUI();
     if (getSettings().autoSnapshot) installFetchInterceptor();
     console.log('[PresetHistory] v2.2.0 已加载');
