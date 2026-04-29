@@ -560,23 +560,43 @@ function applyLocks() {
 // ========== 自动保存预设 ==========
 
 var autoSaveInstalled = false;
+var autoSaveTimer = null;
+
+function triggerPresetSave() {
+    // 防抖2秒，避免连续操作触发多次保存
+    if (autoSaveTimer) clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(function () {
+        var s = getSettings();
+        if (!s.autoSavePreset) return;
+        var $btn = jQuery('#update_oai_preset');
+        if ($btn.length) {
+            $btn.trigger('click');
+            console.log('[PresetHistory] 自动保存预设');
+        }
+    }, 2000);
+}
 
 function installAutoSave() {
     if (autoSaveInstalled) return;
 
-    // 条目保存按钮：保存条目后自动保存整个预设
-    var $entrySave = jQuery('#completion_prompt_manager_popup_entry_form_save');
-    if ($entrySave.length) {
-        $entrySave.on('click.presetHistory', function () {
-            var s = getSettings();
-            if (!s.autoSavePreset) return;
-            // 延迟一下让ST先处理完条目保存，再触发预设保存
-            setTimeout(function () {
-                jQuery('#update_oai_preset').trigger('click');
-                console.log('[PresetHistory] 自动保存预设');
-            }, 500);
-        });
+    // 1. 条目保存按钮：保存条目后自动保存预设
+    jQuery('#completion_prompt_manager_popup_entry_form_save').on('click.presetHistory', triggerPresetSave);
+
+    // 2. 参数滑块/输入框变化：温度、top_p等
+    var paramSelectors = [
+        '#temp_openai', '#top_p_openai', '#top_k_openai', '#min_p_openai',
+        '#freq_pen_openai', '#pres_pen_openai', '#repetition_penalty_openai',
+        '#openai_max_context', '#openai_max_tokens'
+    ];
+    for (var i = 0; i < paramSelectors.length; i++) {
+        jQuery(paramSelectors[i]).on('change.presetHistory', triggerPresetSave);
     }
+
+    // 3. 条目开关变化
+    jQuery(document).on('click.presetHistory', '.prompt_manager_prompt_toggle, .prompt-toggle, [data-pm-toggle]', triggerPresetSave);
+
+    // 4. 条目拖拽排序完成
+    jQuery(document).on('sortupdate.presetHistory', triggerPresetSave);
 
     autoSaveInstalled = true;
     console.log('[PresetHistory] 自动保存已安装');
