@@ -161,17 +161,28 @@ function extractPresetInfo(body) {
 // ========== 快照核心 ==========
 
 function saveSnapshot(presetName, data, source, customLabel) {
-    // 去重只比对核心内容（条目内容+顺序），忽略每次保存都会变的字段
+    // 用白名单提取用户关心的字段来做hash，排除每次保存都可能变的元数据
+    var hashFields = [
+        'prompts', 'prompt_order',
+        'temp_openai', 'top_p_openai', 'top_k_openai', 'min_p_openai', 'top_a_openai',
+        'freq_pen_openai', 'pres_pen_openai', 'repetition_penalty_openai',
+        'openai_max_context', 'openai_max_tokens', 'stream_openai',
+        'main_prompt', 'jailbreak_prompt', 'nsfw_prompt',
+        'impersonation_prompt', 'new_chat_prompt', 'new_group_chat_prompt',
+        'send_if_empty', 'wrap_in_quotes',
+        'chat_completion_source', 'openai_model', 'claude_model',
+    ];
     var coreData = {};
-    if (data.prompts) coreData.prompts = data.prompts;
-    if (data.prompt_order) coreData.prompt_order = data.prompt_order;
+    for (var fi = 0; fi < hashFields.length; fi++) {
+        if (data[hashFields[fi]] !== undefined) coreData[hashFields[fi]] = data[hashFields[fi]];
+    }
 
     var coreStr;
     try { coreStr = JSON.stringify(coreData); } catch (e) { return null; }
     var h = hash(coreStr);
 
-    // 如果核心内容是空的（没有prompts），用完整数据做hash
-    if (!data.prompts && !data.prompt_order) {
+    // 如果白名单全空，用完整数据
+    if (Object.keys(coreData).length === 0) {
         try { h = hash(JSON.stringify(data)); } catch (e) { return null; }
     }
 
@@ -251,7 +262,7 @@ function installFetchInterceptor() {
                                 var autoLabel = '';
                                 var existingSnaps = getSnapshots(info.name);
                                 if (existingSnaps.length > 0) {
-                                    var diffs = diffPresets(existingSnaps[0].data, info.data);
+                                    var diffs = diffPresets(existingSnaps[0].data, info.data, 'changelog');
                                     // 过滤掉"没有检测到差异"
                                     var realDiffs = diffs.filter(function (d) { return d !== '没有检测到差异'; });
                                     if (realDiffs.length > 0) {
@@ -286,80 +297,94 @@ function installFetchInterceptor() {
 // ========== 对比 ==========
 
 /**
- * 对比当前预设和备份快照的差异
- * 返回人话描述的差异列表
+ * 对比两组预设数据的差异
+ * oldData = 旧版本, newData = 新版本
+ * mode = 'changelog'(自动标签用) 或 'restore'(恢复确认用)
+ * changelog: "删除了xxx" / "新增了xxx" / "修改了xxx"
+ * restore: "恢复后会找回xxx" / "新增了xxx" / "xxx内容不同"
  */
-function diffPresets(currentData, snapData) {
+function diffPresets(oldData, newData, mode) {
+    if (!mode) mode = 'restore';
     var diffs = [];
 
-    var curPrompts = (currentData && currentData.prompts) || [];
-    var snapPrompts = (snapData && snapData.prompts) || [];
+    var oldPrompts = (oldData && oldData.prompts) || [];
+    var newPrompts = (newData && newData.prompts) || [];
 
-    // 如果两边都没有prompts字段，直接比整体
-    if (curPrompts.length === 0 && snapPrompts.length === 0) {
-        if (JSON.stringify(currentData) !== JSON.stringify(snapData)) {
+    if (oldPrompts.length === 0 && newPrompts.length === 0) {
+        if (JSON.stringify(oldData) !== JSON.stringify(newData)) {
             diffs.push('预设内容有变化');
         }
         return diffs;
     }
 
-    // 按identifier建索引
-    var curMap = {};
-    for (var i = 0; i < curPrompts.length; i++) {
-        var id = curPrompts[i].identifier || ('idx_' + i);
-        curMap[id] = curPrompts[i];
+    var oldMap = {};
+    for (var i = 0; i < oldPrompts.length; i++) {
+        var oid = oldPrompts[i].identifier || ('idx_' + i);
+        oldMap[oid] = oldPrompts[i];
     }
-    var snapMap = {};
-    for (var j = 0; j < snapPrompts.length; j++) {
-        var sid = snapPrompts[j].identifier || ('idx_' + j);
-        snapMap[sid] = snapPrompts[j];
+    var newMap = {};
+    for (var j = 0; j < newPrompts.length; j++) {
+        var nid = newPrompts[j].identifier || ('idx_' + j);
+        newMap[nid] = newPrompts[j];
     }
 
-    // 找新增的（当前有、备份没有）
-    for (var ck in curMap) {
-        if (!snapMap[ck]) {
-            diffs.push('新增了「' + (curMap[ck].name || '未命名') + '」');
+    // 新数据有、旧数据没有 = 新增
+    for (var nk in newMap) {
+        if (!oldMap[nk]) {
+            diffs.push('新增了「' + (newMap[nk].name || '未命名') + '」');
         }
     }
 
-    // 找删除的（备份有、当前没有）→ 恢复后会回来
-    for (var sk in snapMap) {
-        if (!curMap[sk]) {
-            diffs.push('恢复后会找回「' + (snapMap[sk].name || '未命名') + '」');
+    // 旧数据有、新数据没有 = 删除/恢复
+    for (var ok in oldMap) {
+        if (!newMap[ok]) {
+            if (mode === 'changelog') {
+                diffs.push('删除了「' + (oldMap[ok].name || '未命名') + '」');
+            } else {
+                diffs.push('恢复后会找回「' + (oldMap[ok].name || '未命名') + '」');
+            }
         }
     }
 
-    // 找修改的
-    for (var mk in curMap) {
-        if (snapMap[mk]) {
-            var cp = curMap[mk];
-            var sp = snapMap[mk];
+    // 修改的
+    for (var mk in newMap) {
+        if (oldMap[mk]) {
+            var op = oldMap[mk];
+            var np = newMap[mk];
             var changes = [];
-            if ((cp.content || '') !== (sp.content || '')) changes.push('内容');
-            if ((cp.name || '') !== (sp.name || '')) changes.push('名称');
-            if (!!cp.enabled !== !!sp.enabled) {
-                changes.push(sp.enabled ? '会被开启' : '会被关闭');
+            if ((op.content || '') !== (np.content || '')) changes.push('内容');
+            if ((op.name || '') !== (np.name || '')) changes.push('名称');
+            if (!!op.enabled !== !!np.enabled) {
+                if (mode === 'changelog') {
+                    changes.push(np.enabled ? '开启' : '关闭');
+                } else {
+                    changes.push(np.enabled ? '会被开启' : '会被关闭');
+                }
             }
             if (changes.length > 0) {
-                diffs.push('「' + (cp.name || '未命名') + '」' + changes.join('、') + '不同');
+                if (mode === 'changelog') {
+                    diffs.push('修改了「' + (np.name || '未命名') + '」' + changes.join('、'));
+                } else {
+                    diffs.push('「' + (op.name || '未命名') + '」' + changes.join('、') + '不同');
+                }
             }
         }
     }
 
     // 顺序变化
-    var curOrder = curPrompts.map(function (p) { return p.identifier; }).join(',');
-    var snapOrder = snapPrompts.map(function (p) { return p.identifier; }).join(',');
-    if (curOrder !== snapOrder && curPrompts.length > 0 && snapPrompts.length > 0) {
-        diffs.push('条目顺序不同');
+    var oldOrder = oldPrompts.map(function (p) { return p.identifier; }).join(',');
+    var newOrder = newPrompts.map(function (p) { return p.identifier; }).join(',');
+    if (oldOrder !== newOrder && oldPrompts.length > 0 && newPrompts.length > 0) {
+        diffs.push('条目顺序变化');
     }
 
-    // 非prompt字段变化（设置参数）
+    // 参数变化
     var settingFields = ['temp_openai', 'top_p_openai', 'freq_pen_openai', 'pres_pen_openai',
         'openai_max_context', 'openai_max_tokens', 'min_p_openai', 'top_k_openai'];
     var settingChanges = [];
     for (var sf = 0; sf < settingFields.length; sf++) {
         var field = settingFields[sf];
-        if (currentData[field] !== undefined && snapData[field] !== undefined && currentData[field] !== snapData[field]) {
+        if (oldData[field] !== undefined && newData[field] !== undefined && oldData[field] !== newData[field]) {
             settingChanges.push(field.replace(/_openai$/, '').replace(/_/g, ' '));
         }
     }
@@ -608,7 +633,7 @@ function renderSnapshotList() {
                 if (lastInterceptedBody) {
                     var currentInfo = extractPresetInfo(lastInterceptedBody);
                     if (currentInfo) {
-                        var diffs = diffPresets(currentInfo.data, snap.data);
+                        var diffs = diffPresets(currentInfo.data, snap.data, 'restore');
                         diffText = '\n\n【当前 vs 备份的区别】\n' + diffs.join('\n');
                     }
                 }
