@@ -16,6 +16,9 @@ const SETTINGS_SAVE_ENDPOINT = '/api/settings/save';
 const DEFAULTS = {
     enabled: true,
     autoSnapshot: true,
+    autoSavePreset: false,
+    lockParams: false,    // 锁定参数（温度、top_p等）
+    lockPrompts: false,   // 锁定条目（内容、顺序、开关）
     maxSnapshotsPerPreset: 30,
     snapshots: {},
 };
@@ -514,6 +517,71 @@ async function restoreSnapshot(presetName, snap) {
     }
 }
 
+// ========== 锁定功能 ==========
+
+var lockStyleAdded = false;
+
+function applyLocks() {
+    var s = getSettings();
+
+    // 添加锁定样式（只加一次）
+    if (!lockStyleAdded) {
+        var style = document.createElement('style');
+        style.id = 'ph-lock-styles';
+        style.textContent = ''
+            + '.ph-locked-params #range_block_openai { pointer-events: none; opacity: 0.5; position: relative; }'
+            + '.ph-locked-params #range_block_openai::after { content: "🔒 参数已锁定"; position: absolute; top: 4px; right: 8px; font-size: 12px; opacity: 0.8; }'
+            + '.ph-locked-prompts #completion_prompt_manager { pointer-events: none; opacity: 0.5; position: relative; }'
+            + '.ph-locked-prompts #completion_prompt_manager::after { content: "🔒 条目已锁定"; position: absolute; top: 4px; right: 8px; font-size: 12px; opacity: 0.8; }'
+            + '.ph-locked-prompts .completion_prompt_manager_popup { pointer-events: none; opacity: 0.5; }'
+            + '.ph-locked-prompts .prompt-manager-prompt-controls { pointer-events: none; }'
+            + '.ph-locked-prompts .prompt_manager_prompt_toggle { pointer-events: none; }'
+            + '.ph-locked-prompts .ui-sortable-handle { cursor: default !important; }'
+            ;
+        document.head.appendChild(style);
+        lockStyleAdded = true;
+    }
+
+    var $body = jQuery('body');
+
+    if (s.lockParams) {
+        $body.addClass('ph-locked-params');
+    } else {
+        $body.removeClass('ph-locked-params');
+    }
+
+    if (s.lockPrompts) {
+        $body.addClass('ph-locked-prompts');
+    } else {
+        $body.removeClass('ph-locked-prompts');
+    }
+}
+
+// ========== 自动保存预设 ==========
+
+var autoSaveInstalled = false;
+
+function installAutoSave() {
+    if (autoSaveInstalled) return;
+
+    // 条目保存按钮：保存条目后自动保存整个预设
+    var $entrySave = jQuery('#completion_prompt_manager_popup_entry_form_save');
+    if ($entrySave.length) {
+        $entrySave.on('click.presetHistory', function () {
+            var s = getSettings();
+            if (!s.autoSavePreset) return;
+            // 延迟一下让ST先处理完条目保存，再触发预设保存
+            setTimeout(function () {
+                jQuery('#update_oai_preset').trigger('click');
+                console.log('[PresetHistory] 自动保存预设');
+            }, 500);
+        });
+    }
+
+    autoSaveInstalled = true;
+    console.log('[PresetHistory] 自动保存已安装');
+}
+
 // ========== UI ==========
 
 function addUI() {
@@ -527,6 +595,17 @@ function addUI() {
 
         + '<label class="checkbox_label"><input id="ph_auto_snapshot" type="checkbox" /><span>保存时自动备份</span></label>'
         + '<small style="display:block;opacity:0.6;margin-bottom:8px">每次保存预设或编辑条目时，自动备份一份。</small>'
+
+        + '<label class="checkbox_label"><input id="ph_auto_save_preset" type="checkbox" /><span>操作后自动保存预设</span></label>'
+        + '<small style="display:block;opacity:0.6;margin-bottom:8px">编辑条目后自动保存预设到文件，防止切换预设时丢失修改。默认关闭。</small>'
+
+        + '<hr style="margin:8px 0" />'
+
+        + '<label class="checkbox_label"><input id="ph_lock_params" type="checkbox" /><span>🔒 锁定参数</span></label>'
+        + '<small style="display:block;opacity:0.6;margin-bottom:4px">锁住温度、Top P、频率惩罚等滑块，防止误触。</small>'
+
+        + '<label class="checkbox_label"><input id="ph_lock_prompts" type="checkbox" /><span>🔒 锁定条目</span></label>'
+        + '<small style="display:block;opacity:0.6;margin-bottom:8px">锁住条目的内容编辑、开关和顺序拖拽。</small>'
 
         + '<div style="margin:6px 0"><label>每个预设最多保留 <input id="ph_max_snapshots" type="number" min="1" max="500" style="width:60px" /> 个版本</label>'
         + '<br/><small style="opacity:0.6">超出后自动删除最老的。</small></div>'
@@ -558,6 +637,27 @@ function addUI() {
         s.autoSnapshot = this.checked; saveSettingsDebounced();
         if (s.autoSnapshot) installFetchInterceptor();
     });
+
+    // 操作后自动保存预设
+    jQuery('#ph_auto_save_preset').prop('checked', s.autoSavePreset).on('change', function () {
+        s.autoSavePreset = this.checked; saveSettingsDebounced();
+        if (s.autoSavePreset) installAutoSave();
+    });
+    if (s.autoSavePreset) installAutoSave();
+
+    // 锁定参数
+    jQuery('#ph_lock_params').prop('checked', s.lockParams).on('change', function () {
+        s.lockParams = this.checked; saveSettingsDebounced();
+        applyLocks();
+    });
+
+    // 锁定条目
+    jQuery('#ph_lock_prompts').prop('checked', s.lockPrompts).on('change', function () {
+        s.lockPrompts = this.checked; saveSettingsDebounced();
+        applyLocks();
+    });
+
+    applyLocks();
     jQuery('#ph_max_snapshots').val(s.maxSnapshotsPerPreset).on('change', function () {
         var v = parseInt(this.value, 10);
         if (!isNaN(v) && v > 0 && v <= 500) {
