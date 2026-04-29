@@ -484,7 +484,7 @@ async function restoreSnapshot(presetName, snap) {
         $fileInput[0].files = dataTransfer.files;
 
         // 触发change事件，让ST的导入逻辑接管
-        $fileInput[0].dispatchEvent(new Event('change', { bubbles: true }));
+        $fileInput[0].dispatchEvent(new Event('input', { bubbles: true }));
 
         toastr.success('正在通过导入恢复「' + presetName + '」...\n请在弹出的对话框中确认。');
         return true;
