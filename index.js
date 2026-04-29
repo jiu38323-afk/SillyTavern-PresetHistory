@@ -461,19 +461,11 @@ async function restoreSnapshot(presetName, snap) {
         isRestoring = true;
         var resp;
         try {
-            // 先尝试 /api/presets/save
-            resp = await window.fetch('/api/presets/save', {
+            resp = await window.fetch('/api/settings/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(bodyToSend),
             });
-            if (resp.status === 404) {
-                resp = await window.fetch('/api/settings/save', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(bodyToSend),
-                });
-            }
         } finally {
             isRestoring = false;
         }
