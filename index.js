@@ -934,8 +934,7 @@ function renderSnapshotList() {
     }
     var starredCount = snaps.filter(function (s) { return s.starred; }).length;
     var unstarredCount = snaps.length - starredCount;
-    var statsText = unstarredCount + ' / 最多 ' + getSettings().maxSnapshotsPerPreset + ' 个';
-    if (starredCount > 0) statsText += ' + ' + starredCount + ' 个收藏';
+    var statsText = '本预设：备份' + unstarredCount + '/最多' + getSettings().maxSnapshotsPerPreset + '个，收藏' + starredCount + '/最多10个';
     $list.append('<div style="padding:4px 8px;text-align:center;font-size:0.8em;opacity:0.5;border-top:1px solid rgba(128,128,128,0.2);margin-top:2px">' + statsText + '</div>');
 }
 
