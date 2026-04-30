@@ -16,7 +16,7 @@ const SETTINGS_SAVE_ENDPOINT = '/api/settings/save';
 const DEFAULTS = {
     enabled: true,
     autoSnapshot: true,
-    autoSavePreset: false,
+    autoSavePreset: true,
     lockParams: false,    // 锁定参数（温度、top_p等）
     lockPrompts: false,   // 锁定条目（内容、顺序、开关）
     maxSnapshotsPerPreset: 30,
@@ -208,9 +208,26 @@ function saveSnapshot(presetName, data, source, customLabel) {
         ts: Date.now(),
         label: customLabel || (source === 'auto' ? '自动备份' : '手动备份'),
         hash: h,
+        starred: false,
         data: deepClone(data),
     };
-    settings.snapshots[key] = [snap].concat(existing).slice(0, settings.maxSnapshotsPerPreset);
+
+    // 裁剪：只删没收藏的，收藏的不占名额
+    var newList = [snap].concat(existing);
+    var unstarredCount = 0;
+    var trimmed = [];
+    for (var ti = 0; ti < newList.length; ti++) {
+        if (newList[ti].starred) {
+            trimmed.push(newList[ti]); // 收藏的永远保留
+        } else {
+            unstarredCount++;
+            if (unstarredCount <= settings.maxSnapshotsPerPreset) {
+                trimmed.push(newList[ti]);
+            }
+            // 超出上限的非收藏版本直接丢弃
+        }
+    }
+    settings.snapshots[key] = trimmed;
     saveSettingsDebounced();
     return snap;
 }
@@ -224,6 +241,27 @@ function deleteSnap(presetName, id) {
     if (!s.snapshots[presetName]) return;
     s.snapshots[presetName] = s.snapshots[presetName].filter(function (x) { return x.id !== id; });
     if (s.snapshots[presetName].length === 0) delete s.snapshots[presetName];
+    saveSettingsDebounced();
+}
+
+function toggleStar(presetName, id) {
+    var s = getSettings();
+    var snaps = s.snapshots[presetName];
+    if (!snaps) return;
+    for (var i = 0; i < snaps.length; i++) {
+        if (snaps[i].id === id) {
+            if (!snaps[i].starred) {
+                // 检查收藏上限
+                var starredCount = snaps.filter(function (x) { return x.starred; }).length;
+                if (starredCount >= 10) {
+                    toastr.warning('每个预设最多收藏10个版本。');
+                    return;
+                }
+            }
+            snaps[i].starred = !snaps[i].starred;
+            break;
+        }
+    }
     saveSettingsDebounced();
 }
 
@@ -378,14 +416,28 @@ function diffPresets(oldData, newData, mode) {
         }
     }
 
-    // 删除的条目：区分"从预设移除"和"彻底删除"
+    // 从order移除（条目还在prompts里，可以绑回来）
     for (var ok in oldEnabledMap) {
         if (newEnabledMap[ok] === undefined) {
-            var stillInPrompts = !!newContentMap[ok];
+            if (newContentMap[ok]) {
+                // 还在prompts里 = 只是从预设移除
+                if (mode === 'changelog') {
+                    diffs.push('从预设移除了「' + getName(ok) + '」');
+                } else {
+                    diffs.push('恢复后会找回「' + getName(ok) + '」');
+                }
+            }
+            // 不在prompts里的情况交给下面的prompts删除检测处理
+        }
+    }
+
+    // 从prompts里彻底删除
+    for (var dk in oldContentMap) {
+        if (!newContentMap[dk]) {
             if (mode === 'changelog') {
-                diffs.push((stillInPrompts ? '从预设移除了' : '删除了') + '「' + getName(ok) + '」');
+                diffs.push('彻底删除了「' + (oldContentMap[dk].name || '未命名') + '」');
             } else {
-                diffs.push('恢复后会找回「' + getName(ok) + '」');
+                diffs.push('「' + (oldContentMap[dk].name || '未命名') + '」会被恢复');
             }
         }
     }
@@ -621,7 +673,7 @@ function addUI() {
         + '<small style="display:block;opacity:0.6;margin-bottom:8px">每次保存预设或编辑条目时，自动备份一份。</small>'
 
         + '<label class="checkbox_label"><input id="ph_auto_save_preset" type="checkbox" /><span>操作后自动保存预设</span></label>'
-        + '<small style="display:block;opacity:0.6;margin-bottom:8px">编辑条目后自动保存预设到文件，防止切换预设时丢失修改。默认关闭。</small>'
+        + '<small style="display:block;opacity:0.6;margin-bottom:8px">编辑条目后自动保存预设到文件，防止切换预设时丢失修改。</small>'
 
         + '<hr style="margin:8px 0" />'
 
@@ -637,9 +689,8 @@ function addUI() {
         + '<hr style="margin:8px 0" />'
 
         + '<div style="margin:6px 0">'
-        + '<input id="ph_manual_label" type="text" placeholder="可选备注，例如「调温度之前」..." style="width:100%;box-sizing:border-box;margin-bottom:6px" />'
+        + '<input id="ph_manual_label" type="text" placeholder="可自定义备注，例如「开防截断，温度1.3」..." style="width:100%;box-sizing:border-box;margin-bottom:6px" />'
         + '<button id="ph_manual_now" class="menu_button" style="font-size:12px;padding:6px 12px;width:100%;white-space:nowrap;writing-mode:horizontal-tb">📸 立即备份当前状态</button>'
-        + '<br/><small style="opacity:0.6">需要先保存过一次预设才能用。</small>'
         + '</div>'
 
         + '<hr style="margin:8px 0" />'
@@ -687,7 +738,20 @@ function addUI() {
         if (!isNaN(v) && v > 0 && v <= 500) {
             s.maxSnapshotsPerPreset = v; saveSettingsDebounced();
             for (var k in s.snapshots) {
-                if (s.snapshots[k].length > v) s.snapshots[k] = s.snapshots[k].slice(0, v);
+                var starred = s.snapshots[k].filter(function (x) { return x.starred; });
+                var unstarred = s.snapshots[k].filter(function (x) { return !x.starred; });
+                if (unstarred.length > v) unstarred = unstarred.slice(0, v);
+                // 重组：保持原始顺序
+                var trimmed = [];
+                var ui = 0;
+                for (var si = 0; si < s.snapshots[k].length; si++) {
+                    if (s.snapshots[k][si].starred) {
+                        trimmed.push(s.snapshots[k][si]);
+                    } else if (ui < unstarred.length) {
+                        trimmed.push(unstarred[ui++]);
+                    }
+                }
+                s.snapshots[k] = trimmed;
             }
             renderSnapshotList();
         }
@@ -812,17 +876,24 @@ function renderSnapshotList() {
 
     for (var i = 0; i < snaps.length; i++) {
         (function (snap) {
+            var starIcon = snap.starred ? '⭐' : '☆';
+            var starStyle = snap.starred ? 'background:rgba(255,200,0,0.15);' : '';
             var $item = jQuery(
-                '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid rgba(128,128,128,0.2);gap:6px">'
+                '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid rgba(128,128,128,0.2);gap:6px;' + starStyle + '">'
                 + '<div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0">'
-                + '<span style="font-weight:600;font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHTML(snap.label) + '</span>'
+                + '<span style="font-weight:600;font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (snap.starred ? '⭐ ' : '') + escapeHTML(snap.label) + '</span>'
                 + '<span style="font-size:0.75em;opacity:0.6;font-family:monospace">' + fmtTime(snap.ts) + '</span></div>'
                 + '<div style="display:flex;gap:4px;flex-shrink:0">'
+                + '<button class="ph-star menu_button" title="' + (snap.starred ? '取消收藏' : '收藏') + '" style="font-size:12px;padding:3px 6px">' + starIcon + '</button>'
                 + '<button class="ph-restore menu_button" title="恢复" style="font-size:12px;padding:3px 6px">⏪</button>'
                 + '<button class="ph-export menu_button" title="导出" style="font-size:12px;padding:3px 6px">📤</button>'
                 + '<button class="ph-delete menu_button" title="删除" style="font-size:12px;padding:3px 6px">🗑️</button>'
                 + '</div></div>'
             );
+            $item.find('.ph-star').on('click', function () {
+                toggleStar(name, snap.id);
+                renderSnapshotList();
+            });
             $item.find('.ph-restore').on('click', async function () {
                 // 对比当前和备份的差异
                 var diffText = '';
@@ -852,7 +923,8 @@ function renderSnapshotList() {
                 toastr.success('已导出。');
             });
             $item.find('.ph-delete').on('click', function () {
-                if (!confirm('删除这个备份？\n' + snap.label)) return;
+                var msg = snap.starred ? '⚠️ 这是收藏版本！确定要删除吗？\n' + snap.label : '删除这个备份？\n' + snap.label;
+                if (!confirm(msg)) return;
                 deleteSnap(name, snap.id);
                 renderSnapshotList();
                 toastr.info('已删除。');
@@ -860,7 +932,11 @@ function renderSnapshotList() {
             $list.append($item);
         })(snaps[i]);
     }
-    $list.append('<div style="padding:4px 8px;text-align:center;font-size:0.8em;opacity:0.5;border-top:1px solid rgba(128,128,128,0.2);margin-top:2px">' + snaps.length + ' / 最多 ' + getSettings().maxSnapshotsPerPreset + ' 个</div>');
+    var starredCount = snaps.filter(function (s) { return s.starred; }).length;
+    var unstarredCount = snaps.length - starredCount;
+    var statsText = unstarredCount + ' / 最多 ' + getSettings().maxSnapshotsPerPreset + ' 个';
+    if (starredCount > 0) statsText += ' + ' + starredCount + ' 个收藏';
+    $list.append('<div style="padding:4px 8px;text-align:center;font-size:0.8em;opacity:0.5;border-top:1px solid rgba(128,128,128,0.2);margin-top:2px">' + statsText + '</div>');
 }
 
 function manualSnapshotNow() {
